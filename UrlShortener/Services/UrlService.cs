@@ -1,7 +1,4 @@
-﻿using Dapper;
 using Microsoft.Extensions.Caching.Distributed;
-using Npgsql;
-using System.Data;
 using UrlShortener.Interfaces;
 using UrlShortener.Models;
 using UrlShortener.Utilities;
@@ -10,86 +7,87 @@ namespace UrlShortener.Services
 {
     public class UrlService : IUrlService
     {
-        private readonly string _postgresConnectionString;
+        private const string NotFoundSentinel = "__NOT_FOUND__";
+
+        private static readonly DistributedCacheEntryOptions DefaultCacheOptions = new()
+        {
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromDays(7),
+            SlidingExpiration = TimeSpan.FromDays(1)
+        };
+
+        private static readonly DistributedCacheEntryOptions NotFoundCacheOptions = new()
+        {
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1)
+        };
+
+        private readonly IUrlRepository _urlRepository;
         private readonly IDistributedCache _cache;
         private readonly ILogger<UrlService> _logger;
 
-        public UrlService(IConfiguration configuration, IDistributedCache cache, ILogger<UrlService> logger)
+        public UrlService(IUrlRepository urlRepository, IDistributedCache cache, ILogger<UrlService> logger)
         {
-            _postgresConnectionString = configuration.GetConnectionString("Postgres")!;
+            _urlRepository = urlRepository;
             _cache = cache;
             _logger = logger;
         }
 
-        private IDbConnection CreateConnection() => new NpgsqlConnection(_postgresConnectionString);
-
         public async Task<string?> GetOriginalUrlAsync(string shortCode)
         {
+            if (string.IsNullOrWhiteSpace(shortCode) || !Base62Converter.IsValid(shortCode))
+            {
+                return null;
+            }
+
             var cachedUrl = await _cache.GetStringAsync(shortCode);
             if (!string.IsNullOrEmpty(cachedUrl))
             {
+                if (cachedUrl == NotFoundSentinel)
+                {
+                    return null;
+                }
+
                 _logger.LogInformation("Cache HIT for short code: {ShortCode}", shortCode);
                 return cachedUrl;
             }
 
             _logger.LogWarning("Cache MISS for short code: {ShortCode}. Querying PostgreSQL...", shortCode);
 
-            using var connection = CreateConnection();
+            var url = await _urlRepository.GetByShortCodeAsync(shortCode);
 
-            const string sql = "SELECT OriginalUrl FROM Urls WHERE ShortCode = @ShortCode;";
-            var originalUrl = await connection.QueryFirstOrDefaultAsync<string>(sql, new
+            if (url is null)
             {
-                ShortCode = shortCode
-            });
-
-            if (!string.IsNullOrEmpty(originalUrl))
-            {
-                var cacheOptions = new DistributedCacheEntryOptions
-                {
-                    SlidingExpiration = TimeSpan.FromDays(1)
-                };
-                await _cache.SetStringAsync(shortCode, originalUrl, cacheOptions);
+                await _cache.SetStringAsync(shortCode, NotFoundSentinel, NotFoundCacheOptions);
+                return null;
             }
-            return originalUrl;
+
+            await _cache.SetStringAsync(
+                shortCode,
+                url.OriginalUrl,
+                DefaultCacheOptions);
+
+            return url.OriginalUrl;
         }
 
         public async Task<ShortenedUrl> ShortenUrlAsync(string originalUrl)
         {
-            using var connection = CreateConnection();
+            var createdAt = DateTime.UtcNow;
 
-            const string insertSql = @"
-                INSERT INTO Urls (OriginalUrl, ShortCode, CreatedAt)
-                VALUES (@OriginalUrl, '', @CreatedAt) RETURNING ID;
-            ";
-
-            var id = await connection.ExecuteScalarAsync<Guid>(insertSql, new
-            {
-                OriginalUrl = originalUrl,
-                CreatedAt = DateTime.UtcNow
-            });
-
+            var id = await _urlRepository.GetNextIdAsync();
             var shortCode = Base62Converter.Encode(id);
 
-            const string updateSql = "UPDATE Urls SET ShortCode = @ShortCode WHERE Id = @Id";
-            await connection.ExecuteAsync(updateSql, new
-            {
-                ShortCode = shortCode,
-                Id = id
-            });
-
-            var cacheOptions = new DistributedCacheEntryOptions
-            {
-                SlidingExpiration = TimeSpan.FromDays(1)
-            };
-            await _cache.SetStringAsync(shortCode, originalUrl, cacheOptions);
-
-            return new ShortenedUrl
+            var shortenedUrl = new ShortenedUrl
             {
                 Id = id,
                 OriginalUrl = originalUrl,
                 ShortCode = shortCode,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = createdAt
             };
+
+            await _urlRepository.CreateAsync(shortenedUrl);
+
+            await _cache.SetStringAsync(shortCode, originalUrl, DefaultCacheOptions);
+
+            return shortenedUrl;
         }
     }
 }

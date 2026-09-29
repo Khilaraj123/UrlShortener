@@ -1,10 +1,10 @@
 ﻿namespace UrlShortener.Models
 {
-    public class ShortenedUrl
+    public sealed class ShortenedUrl
     {
-        public Guid Id { get; set; }
-        public string OriginalUrl { get; set; } = string.Empty;
-        public string ShortCode { get; set; } = string.Empty;
-        public DateTime CreatedAt { get; set; }
+        public long Id { get; init; }
+        public string OriginalUrl { get; init; } = string.Empty;
+        public string ShortCode { get; init; } = string.Empty;
+        public DateTime CreatedAt { get; init; }
     }
 }

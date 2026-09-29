@@ -1,4 +1,6 @@
+using UrlShortener.Database;
 using UrlShortener.Interfaces;
+using UrlShortener.Repositories;
 using UrlShortener.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -7,15 +9,20 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 builder.Services.AddStackExchangeRedisCache(options =>
 {
-    options.Configuration = builder.Configuration.GetConnectionString("Redis");
+    options.Configuration =
+        builder.Configuration.GetConnectionString("Redis");
+
     options.InstanceName = "UrlShortener_";
 });
 
+builder.Services.AddSingleton<IDbConnectionFactory, DbConnectionFactory>();
+
+builder.Services.AddScoped<IUrlRepository, UrlRepository>();
 builder.Services.AddScoped<IUrlService, UrlService>();
 
 var app = builder.Build();

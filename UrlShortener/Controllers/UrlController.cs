@@ -1,11 +1,11 @@
-﻿using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using UrlShortener.DTOs;
 using UrlShortener.Interfaces;
 
 namespace UrlShortener.Controllers
 {
-    [Route("api/[controller]")]
+    [Route("api/urls")]
     [ApiController]
     public class UrlController : ControllerBase
     {
@@ -15,17 +15,37 @@ namespace UrlShortener.Controllers
         public UrlController(IUrlService urlService, IConfiguration configuration)
         {
             _urlService = urlService;
-            _baseUrl = configuration["BaseUrl"] ?? "http://localhost:5000";
+            _baseUrl = (configuration["BaseUrl"] ?? "http://localhost:5062").TrimEnd('/');
         }
 
-        [HttpPost("api/urls")]
-        public async Task<IActionResult> Shorten([FromBody] ShortenUrlRequest request)
+        [HttpPost]
+        public async Task<IActionResult> Shorten([FromBody] ShortenUrlRequest? request)
         {
-            if(!Uri.TryCreate(request.Url, UriKind.Absolute, out _))
+            if (request is null || string.IsNullOrWhiteSpace(request.Url))
             {
                 return BadRequest(new
                 {
-                    message = "Invalid URL format provided."
+                    message = "URL cannot be empty."
+                });
+            }
+
+            if (!Uri.TryCreate(request.Url, UriKind.Absolute, out var uri) ||
+                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            {
+                return BadRequest(new
+                {
+                    message = "Invalid URL format. Only HTTP and HTTPS URLs are allowed."
+                });
+            }
+
+            // Prevent self-referencing / recursion loops
+            if (Uri.TryCreate(_baseUrl, UriKind.Absolute, out var baseUri) &&
+                string.Equals(uri.Host, baseUri.Host, StringComparison.OrdinalIgnoreCase) &&
+                uri.Port == baseUri.Port)
+            {
+                return BadRequest(new
+                {
+                    message = "Cannot shorten URLs from this service."
                 });
             }
 
@@ -37,26 +57,9 @@ namespace UrlShortener.Controllers
                 OriginalUrl: result.OriginalUrl
             );
 
-            return CreatedAtAction(nameof(RedirectToOriginal), new
-            {
-                shortCode = result.ShortCode
-            }, response);
-        }
-
-        [HttpGet("{shortCode}")]
-        public async Task<IActionResult> RedirectToOriginal(string shortCode)
-        {
-            var originalUrl = await _urlService.GetOriginalUrlAsync(shortCode);
-
-            if (string.IsNullOrEmpty(originalUrl))
-            {
-                return NotFound(new
-                {
-                    message = "Short Url not found or expired"
-                });
-            }
-
-            return Redirect(originalUrl);
+            return Created(
+                response.ShortUrl,
+                response);
         }
     }
 }

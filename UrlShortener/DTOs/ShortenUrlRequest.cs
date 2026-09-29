@@ -1,4 +1,9 @@
-﻿namespace UrlShortener.DTOs
+using System.ComponentModel.DataAnnotations;
+
+namespace UrlShortener.DTOs
 {
-    public record ShortenUrlRequest(string Url);
+    public record ShortenUrlRequest(
+        [Required(ErrorMessage = "URL is required.")]
+        string Url
+    );
 }
